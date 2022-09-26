@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
+#include "MAX30102/MAX30102.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,6 +44,7 @@
 ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim10;
@@ -70,6 +72,7 @@ static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM10_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 void usDelay(uint32_t uSec);
 void setLED();
@@ -88,6 +91,7 @@ char data1[32] = " ";
 short buttonInput[2] = {0};
 int BPM_final = 0;
 int BPM_CNT = 0;
+int spo2 = 0;
 uint8_t Buffer[25] = {0};
 uint8_t Space[] = " - ";
 uint8_t StartMSG[] = "Starting I2C Scanning: \r\n";
@@ -104,6 +108,13 @@ uint8_t LEDPins[4] = {
 		LED3_Pin,
 		LED4_Pin
 };
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if (GPIO_Pin == INT_Pin)
+	{
+		Max30102_InterruptCallback();
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -141,6 +152,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM10_Init();
   MX_I2C1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 	uint8_t data_read[4];
 	uint8_t data_read1[4];
@@ -165,6 +177,15 @@ int main(void)
 
 	int ok=0;
 	int BPM_list[30];
+
+	if (Max30102_Init(&hi2c2) == MAX30102_ERROR) {
+		uart_buf_len = sprintf(uart_buf, "Initialize max30102 not working!");
+		HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
+		exit(0);
+	}
+	uart_buf_len = sprintf(uart_buf, "Initialized max30102 successfully");
+	HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
+	int curint = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -268,7 +289,19 @@ int main(void)
 			}
 			break;
 		case 3:
-			// oximeter
+			Max30102_Task();
+
+			int curr_spo2 = Max30102_GetSpO2Value();
+			uart_buf_len = sprintf(uart_buf, "SpO2: %d \r\n", curr_spo2);
+			if(50 <= curr_spo2 && curr_spo2 <= 100) {
+				spo2 = curr_spo2;
+			}
+
+			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
+			if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9) == GPIO_PIN_RESET && curint == GPIO_PIN_SET) {
+				Max30102_InterruptCallback();
+			}
+			curint = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
 			break;
 		default:
 			uart_buf_len = sprintf(uart_buf, "Height: %d m\r\n", height);
@@ -276,6 +309,8 @@ int main(void)
 			uart_buf_len = sprintf(uart_buf, "Body Temperature: %d c\r\n", object_temperature);
 			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
 			uart_buf_len = sprintf(uart_buf, "Heart Rate: %d BPM\r\n", BPM_final);
+			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
+			uart_buf_len = sprintf(uart_buf, "Blood Oxygen: %d \% \r\n", spo2);
 			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, uart_buf_len, 100);
 			exit(0);
 	}
@@ -424,6 +459,40 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 100000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -596,6 +665,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED3_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : INT_Pin */
+  GPIO_InitStruct.Pin = INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(INT_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
@@ -610,7 +689,8 @@ void usDelay(uint32_t uSec) {
 }
 
 int getHeight(uint32_t fixedHeight) {
-
+  int loop;
+  int maxloop =10000;
 	HAL_GPIO_WritePin(Trigger_GPIO_Port, Trigger_Pin, GPIO_PIN_RESET);
 	//set TRIG to LOW for few uSec
 	 usDelay(3);
@@ -621,7 +701,14 @@ int getHeight(uint32_t fixedHeight) {
 	 HAL_GPIO_WritePin(Trigger_GPIO_Port, Trigger_Pin, GPIO_PIN_RESET);
 
 	//what for ECHO pin rising edge
-	 while(HAL_GPIO_ReadPin(Echo_GPIO_Port, Echo_Pin) == GPIO_PIN_RESET);
+	 loop = 0;
+	 while(HAL_GPIO_ReadPin(Echo_GPIO_Port, Echo_Pin) == GPIO_PIN_RESET) {
+		 loop++;
+		 if (loop > maxloop) {
+			 return 0;
+			 break;
+		 }
+	 }
 	 //start measuring ECHO pulse width in usec
 	 numTicks = 0;
 	 while(HAL_GPIO_ReadPin(Echo_GPIO_Port, Echo_Pin) == GPIO_PIN_SET)
